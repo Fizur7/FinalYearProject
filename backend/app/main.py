@@ -25,18 +25,7 @@ async def _seed_defaults():
     from .auth import hash_password
     db = get_db()
 
-    # Default rewards
-    if await db.rewards.count_documents({}) == 0:
-        await db.rewards.insert_many([
-            {"name": "Movie Ticket",      "points_cost": 500,  "icon": "🎬", "available": True},
-            {"name": "Coffee Voucher",    "points_cost": 200,  "icon": "☕", "available": True},
-            {"name": "Bus Pass (1 Week)", "points_cost": 750,  "icon": "🚌", "available": True},
-            {"name": "Shopping Voucher",  "points_cost": 1000, "icon": "🛍️", "available": True},
-            {"name": "Eco T-Shirt",       "points_cost": 300,  "icon": "👕", "available": False},
-            {"name": "Plant Sapling",     "points_cost": 150,  "icon": "🌱", "available": True},
-        ])
-
-    # Default admin account
+    # Only seed admin if no admin exists (won't duplicate after restore from file)
     if not await db.users.find_one({"role": "admin"}):
         await db.users.insert_one({
             "name": "Admin", "email": "admin@ecotrack.com",
@@ -45,7 +34,7 @@ async def _seed_defaults():
         })
         print("[Seed] Admin: admin@ecotrack.com / admin123")
 
-    # Default driver account
+    # Only seed driver if no driver exists
     if not await db.users.find_one({"role": "driver"}):
         await db.users.insert_one({
             "name": "Driver One", "email": "driver@ecotrack.com",

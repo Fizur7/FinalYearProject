@@ -36,3 +36,18 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# environment files — never commit secrets
+.env
+.env.local
+.env*.local
+backend/.env
+backend/mock_db.json
+
+# Python
+backend/__pycache__/
+backend/**/__pycache__/
+backend/*.pyc
+backend/uploads/
+backend/model/*.pt
+backend/waste_app.db

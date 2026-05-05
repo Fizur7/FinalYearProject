@@ -1,8 +1,9 @@
-﻿"""MongoDB-based reports router with YOLOv8 AI integration."""
+﻿"""Reports router with YOLOv8 AI + streak tracking."""
 import uuid, os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from typing import Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
+
 from .. import schemas
 from ..auth import get_current_user
 from ..database import get_db
@@ -24,15 +25,31 @@ def _nearest_unit(lat, lng):
     if lat is None or lng is None: return COLLECTION_UNITS[0]["name"]
     return min(COLLECTION_UNITS, key=lambda u: (u["lat"]-lat)**2+(u["lng"]-lng)**2)["name"]
 
+async def _update_streak(db, user_id):
+    """Increment streak if user has not reported today yet."""
+    from bson import ObjectId
+    today = datetime.now(timezone.utc).date()
+    today_start = datetime.combine(today, datetime.min.time()).replace(tzinfo=timezone.utc)
+    reported_today = await db.reports.count_documents({
+        "user_id": str(user_id),
+        "created_at": {"$gte": today_start}
+    })
+    if reported_today == 0:
+        # First report of today — increment streak
+        await db.users.update_one({"_id": user_id}, {"$inc": {"streak": 1}})
+
 @router.post("/analyze")
 async def analyze_only(image: UploadFile = File(...), current_user: dict = Depends(get_current_user)):
     return analyze_image(await image.read())
 
 @router.post("/", response_model=schemas.ReportResponse)
 async def create_report(
-    location_address: Optional[str] = Form(None), lat: Optional[float] = Form(None),
-    lng: Optional[float] = Form(None), waste_type: Optional[str] = Form(None),
-    description: Optional[str] = Form(None), image: Optional[UploadFile] = File(None),
+    location_address: Optional[str] = Form(None),
+    lat: Optional[float] = Form(None),
+    lng: Optional[float] = Form(None),
+    waste_type: Optional[str] = Form(None),
+    description: Optional[str] = Form(None),
+    image: Optional[UploadFile] = File(None),
     current_user: dict = Depends(get_current_user),
 ):
     db = get_db()
@@ -42,23 +59,28 @@ async def create_report(
         filename = f"{uuid.uuid4().hex}_{image.filename}"
         image_path = os.path.join(UPLOAD_DIR, filename)
         with open(image_path, "wb") as f: f.write(image_bytes)
+
     ai_data = {"waste_type": waste_type or "general", "confidence": None, "results": None}
     if image_bytes:
         ai_data = analyze_image(image_bytes); waste_type = ai_data["waste_type"]
-    assigned_unit = _nearest_unit(lat, lng)
+
     now = datetime.now(timezone.utc)
     timeline = [
-        {"status": "Submitted", "message": "Report submitted", "timestamp": now},
+        {"status": "Submitted", "message": "Report submitted by citizen", "timestamp": now},
         {"status": "AI Analysis", "message": f"Classified as {waste_type}", "timestamp": now},
-        {"status": "Assigned", "message": f"Assigned to {assigned_unit}", "timestamp": now},
     ]
-    doc = {"report_id": _make_report_id(), "user_id": str(current_user["_id"]),
-           "location_address": location_address, "lat": lat, "lng": lng,
-           "waste_type": waste_type, "description": description, "image_path": image_path,
-           "status": "Assigned", "priority": "high" if waste_type == "hazardous" else "medium",
-           "ai_confidence": ai_data.get("confidence"), "ai_results": ai_data.get("results"),
-           "assigned_unit": assigned_unit, "timeline": timeline, "created_at": now, "updated_at": now}
+    doc = {
+        "report_id": _make_report_id(), "user_id": str(current_user["_id"]),
+        "location_address": location_address, "lat": lat, "lng": lng,
+        "waste_type": waste_type, "description": description, "image_path": image_path,
+        "status": "Pending", "priority": "high" if waste_type == "hazardous" else "medium",
+        "ai_confidence": ai_data.get("confidence"), "ai_results": ai_data.get("results"),
+        "assigned_unit": None, "assigned_driver_id": None, "driver_updates": [],
+        "timeline": timeline, "created_at": now, "updated_at": now,
+    }
     result = await db.reports.insert_one(doc)
+    # Award points + update streak
+    await _update_streak(db, current_user["_id"])
     await db.users.update_one({"_id": current_user["_id"]}, {"$inc": {"points": 10}})
     return _serialize(await db.reports.find_one({"_id": result.inserted_id}))
 

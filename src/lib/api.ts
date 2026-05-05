@@ -22,6 +22,11 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
+    // Auto-clear stale token on 401
+    if (res.status === 401) {
+      localStorage.removeItem("token");
+      localStorage.removeItem("user");
+    }
     throw new Error(err.detail ?? "Request failed");
   }
   return res.json();
@@ -68,11 +73,21 @@ export const api = {
   },
   admin: {
     reports: (status?: string) => request(`/api/admin/reports${status ? `?status=${status}` : ""}`),
+    reportDetail: (reportId: string) => request(`/api/admin/reports/${reportId}/detail`),
+    updateReport: (reportId: string, data: object) => request(`/api/admin/reports/${reportId}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteReport: (reportId: string) => request(`/api/admin/reports/${reportId}`, { method: "DELETE" }),
     approve: (reportId: string, driverId: string) =>
       request(`/api/admin/reports/${reportId}/approve?driver_id=${driverId}`, { method: "POST" }),
     reject: (reportId: string, reason?: string) =>
       request(`/api/admin/reports/${reportId}/reject?reason=${encodeURIComponent(reason || "Does not meet criteria")}`, { method: "POST" }),
+    citizens: () => request("/api/admin/citizens"),
+    createCitizen: (data: object) => request("/api/admin/citizens", { method: "POST", body: JSON.stringify(data) }),
+    updateCitizen: (id: string, data: object) => request(`/api/admin/citizens/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteCitizen: (id: string) => request(`/api/admin/citizens/${id}`, { method: "DELETE" }),
     drivers: () => request("/api/admin/drivers"),
+    createDriver: (data: object) => request("/api/admin/drivers", { method: "POST", body: JSON.stringify(data) }),
+    updateDriver: (id: string, data: object) => request(`/api/admin/drivers/${id}`, { method: "PUT", body: JSON.stringify(data) }),
+    deleteDriver: (id: string) => request(`/api/admin/drivers/${id}`, { method: "DELETE" }),
   },
   driver: {
     tasks: () => request("/api/driver/tasks"),

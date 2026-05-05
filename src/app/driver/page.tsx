@@ -11,7 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { MapPin, Camera, Upload, Navigation, CheckCircle, Clock, Truck, Leaf, Recycle, AlertTriangle, Trash2, RefreshCw, X, Send } from "lucide-react";
+import { MapPin, Camera, Upload, Navigation, CheckCircle, Clock, Truck, Leaf, Recycle, AlertTriangle, Trash2, RefreshCw, X, Send, Image as ImageIcon } from "lucide-react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -19,7 +19,7 @@ interface Report {
   id: string; report_id: string; location_address?: string;
   waste_type?: string; status: string; priority: string;
   lat?: number; lng?: number; description?: string;
-  assigned_unit?: string; created_at: string;
+  assigned_unit?: string; created_at: string; image_path?: string;
   driver_updates?: { image_path?: string; lat?: number; lng?: number; note?: string; timestamp: string }[];
 }
 
@@ -59,9 +59,17 @@ export default function DriverPage() {
       ]);
       setTasks(t);
       setHistory(h);
-    } catch (e) { console.error(e); }
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes("validate credentials")) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        router.push("/login");
+        return;
+      }
+      console.error(e);
+    }
     finally { setLoading(false); }
-  }, []);
+  }, [router]);
 
   useEffect(() => {
     if (!isLoading && (!user || user.role !== "driver")) router.push("/login");
@@ -249,6 +257,25 @@ export default function DriverPage() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <p className="text-sm text-muted-foreground font-mono">{activeTask?.report_id} — {activeTask?.location_address}</p>
+
+            {/* Citizen's original image for reference */}
+            {activeTask?.image_path && (
+              <div className="p-3 bg-muted/50 rounded-xl">
+                <p className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1">
+                  <ImageIcon className="w-3 h-3" /> Citizen's original report image
+                </p>
+                <img src={`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/${activeTask.image_path}`}
+                  alt="Citizen report" className="w-full max-h-36 object-cover rounded-lg border" />
+              </div>
+            )}
+
+            {/* Citizen location for reference */}
+            {(activeTask?.lat || activeTask?.location_address) && (
+              <div className="p-3 bg-muted/50 rounded-xl text-xs text-muted-foreground">
+                <p className="font-semibold mb-1 flex items-center gap-1"><MapPin className="w-3 h-3" />Reported location</p>
+                <p>{activeTask.location_address || `${activeTask.lat?.toFixed(4)}, ${activeTask.lng?.toFixed(4)}`}</p>
+              </div>
+            )}
 
             {/* Image upload */}
             <div className={`border-2 border-dashed rounded-xl p-4 text-center cursor-pointer hover:border-primary transition-colors ${imagePreview ? "border-primary" : "border-muted"}`}

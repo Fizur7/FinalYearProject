@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { motion } from "framer-motion";
 import { Navbar } from "@/components/navbar";
 import { Footer } from "@/components/footer";
@@ -8,368 +9,294 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
-  BarChart3,
-  TrendingUp,
-  TrendingDown,
-  MapPin,
-  Clock,
-  CheckCircle,
-  AlertCircle,
-  Truck,
-  Users,
-  Leaf,
-  Recycle,
-  AlertTriangle,
-  Trash2,
-  RefreshCw,
-  Filter,
-  Download,
-  Target,
-  Zap,
+  BarChart3, MapPin, Clock, CheckCircle,
+  Truck, Leaf, Recycle, AlertTriangle, Trash2,
+  RefreshCw, Zap, Star, Trophy, ArrowRight,
 } from "lucide-react";
+import { api } from "@/lib/api";
+import { useAuth } from "@/lib/auth-context";
 
-const recentReports = [
-  { id: "RPT-A1B2C", location: "Main Street Junction", type: "Recyclable", status: "In Progress", time: "2 min ago", priority: "high" },
-  { id: "RPT-D3E4F", location: "Central Park Area", type: "Organic", status: "Assigned", time: "5 min ago", priority: "medium" },
-  { id: "RPT-G5H6I", location: "Market Square", type: "General", status: "Completed", time: "12 min ago", priority: "low" },
-  { id: "RPT-J7K8L", location: "Railway Station", type: "Hazardous", status: "Pending", time: "18 min ago", priority: "high" },
-  { id: "RPT-M9N0O", location: "Hospital Road", type: "Organic", status: "In Progress", time: "25 min ago", priority: "medium" },
-  { id: "RPT-P1Q2R", location: "School Zone", type: "Recyclable", status: "Completed", time: "32 min ago", priority: "low" },
-];
+interface Report {
+  id: string; report_id: string; location_address?: string;
+  waste_type?: string; status: string; priority: string; created_at: string;
+}
+interface Stats {
+  total_reports: number; pending_reports: number; assigned_reports: number;
+  in_progress_reports: number; completed_reports: number;
+  completed_today: number; points: number; level: number;
+}
+interface WasteDist { type: string; count: number; }
 
-const collectionUnits = [
-  { id: "CU-001", name: "Unit Alpha", status: "Active", currentTask: "RPT-A1B2C", location: "Main Street", load: 65 },
-  { id: "CU-002", name: "Unit Beta", status: "Active", currentTask: "RPT-M9N0O", location: "Hospital Road", load: 42 },
-  { id: "CU-003", name: "Unit Gamma", status: "En Route", currentTask: "RPT-D3E4F", location: "Central Park", load: 78 },
-  { id: "CU-004", name: "Unit Delta", status: "Idle", currentTask: null, location: "Depot", load: 15 },
-];
+const wasteColor: Record<string, string> = {
+  organic: "bg-green-500", recyclable: "bg-blue-500",
+  hazardous: "bg-orange-500", general: "bg-gray-500",
+};
+const WasteIcon = ({ type }: { type?: string }) => {
+  const icons: Record<string, React.ReactNode> = {
+    organic: <Leaf className="w-5 h-5 text-white" />,
+    recyclable: <Recycle className="w-5 h-5 text-white" />,
+    hazardous: <AlertTriangle className="w-5 h-5 text-white" />,
+    general: <Trash2 className="w-5 h-5 text-white" />,
+  };
+  return (
+    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${wasteColor[type || "general"] || "bg-gray-500"}`}>
+      {icons[type || "general"]}
+    </div>
+  );
+};
 
-const wasteDistribution = [
-  { type: "Organic", count: 342, color: "bg-green-500", icon: Leaf, percentage: 35 },
-  { type: "Recyclable", count: 287, color: "bg-blue-500", icon: Recycle, percentage: 29 },
-  { type: "General", count: 245, color: "bg-gray-500", icon: Trash2, percentage: 25 },
-  { type: "Hazardous", count: 108, color: "bg-orange-500", icon: AlertTriangle, percentage: 11 },
-];
-
-const heatmapZones = [
-  { zone: "Zone A - Downtown", intensity: 92, reports: 156, trend: "up" },
-  { zone: "Zone B - Industrial", intensity: 78, reports: 98, trend: "down" },
-  { zone: "Zone C - Residential", intensity: 65, reports: 87, trend: "up" },
-  { zone: "Zone D - Commercial", intensity: 85, reports: 134, trend: "stable" },
-  { zone: "Zone E - Suburbs", intensity: 45, reports: 52, trend: "down" },
-];
 
 export default function DashboardPage() {
-  const [isRefreshing, setIsRefreshing] = useState(false);
-  const [stats, setStats] = useState({
-    totalReports: 982,
-    pendingReports: 47,
-    completedToday: 156,
-    avgResponseTime: 28.4,
-    validationRate: 87,
-    activeUnits: 3,
-  });
+  const { user, isLoading } = useAuth();
+  const router = useRouter();
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [reports, setReports] = useState<Report[]>([]);
+  const [wasteDist, setWasteDist] = useState<WasteDist[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const handleRefresh = () => {
-    setIsRefreshing(true);
-    setTimeout(() => {
-      setStats({
-        ...stats,
-        totalReports: stats.totalReports + Math.floor(Math.random() * 5),
-        completedToday: stats.completedToday + Math.floor(Math.random() * 3),
-      });
-      setIsRefreshing(false);
-    }, 1000);
-  };
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [s, r, w] = await Promise.all([
+        api.dashboard.stats() as Promise<Stats>,
+        api.dashboard.recentReports() as Promise<Report[]>,
+        api.dashboard.wasteDistribution() as Promise<WasteDist[]>,
+      ]);
+      setStats(s); setReports(r); setWasteDist(w);
+    } catch (e: unknown) {
+      if (e instanceof Error && e.message.includes("validate credentials")) {
+        localStorage.removeItem("token"); localStorage.removeItem("user");
+        router.push("/login");
+      }
+    } finally { setLoading(false); }
+  }, [router]);
+
+  useEffect(() => {
+    if (!isLoading && !user) router.push("/login");
+  }, [user, isLoading, router]);
+
+  useEffect(() => { if (user) fetchData(); }, [user, fetchData]);
+
+  const totalWaste = wasteDist.reduce((a, b) => a + b.count, 0);
+
+  if (isLoading || !user) return (
+    <div className="min-h-screen flex items-center justify-center">
+      <div className="animate-spin w-8 h-8 border-4 border-primary border-t-transparent rounded-full" />
+    </div>
+  );
 
   return (
     <div className="min-h-screen bg-background">
       <Navbar />
-
       <main className="pt-24 pb-20">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+
+          {/* Header */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
             <div>
-              <h1 className="text-3xl font-bold mb-2">Municipal Dashboard</h1>
-              <p className="text-muted-foreground">
-                Real-time monitoring of waste reports and collection operations
-              </p>
+              <h1 className="text-3xl font-bold mb-1">My Dashboard</h1>
+              <p className="text-muted-foreground">Welcome back, {user.name} — here are your waste reports</p>
             </div>
-            <div className="flex gap-3">
-              <Button variant="outline" className="gap-2" onClick={handleRefresh}>
-                <RefreshCw className={`w-4 h-4 ${isRefreshing ? "animate-spin" : ""}`} />
-                Refresh
-              </Button>
-              <Button variant="outline" className="gap-2">
-                <Filter className="w-4 h-4" />
-                Filter
-              </Button>
-              <Button className="gap-2">
-                <Download className="w-4 h-4" />
-                Export
-              </Button>
-            </div>
+            <Button variant="outline" className="gap-2" onClick={fetchData} disabled={loading}>
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} /> Refresh
+            </Button>
           </div>
 
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-4 mb-8">
+          {/* Stats cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
             {[
-              { label: "Total Reports", value: stats.totalReports, icon: BarChart3, trend: "+12%", color: "text-primary" },
-              { label: "Pending", value: stats.pendingReports, icon: Clock, trend: "-8%", color: "text-orange-500" },
-              { label: "Completed Today", value: stats.completedToday, icon: CheckCircle, trend: "+23%", color: "text-green-500" },
-              { label: "Avg Response", value: `${stats.avgResponseTime}s`, icon: Zap, trend: "-5%", color: "text-blue-500" },
-              { label: "Validation Rate", value: `${stats.validationRate}%`, icon: Target, trend: "+2%", color: "text-purple-500" },
-              { label: "Active Units", value: stats.activeUnits, icon: Truck, trend: "stable", color: "text-teal-500" },
-            ].map((stat, i) => (
-              <motion.div
-                key={i}
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: i * 0.05 }}
-              >
-                <Card className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <stat.icon className={`w-5 h-5 ${stat.color}`} />
-                      <Badge variant="secondary" className="text-xs">
-                        {stat.trend.startsWith("+") ? (
-                          <TrendingUp className="w-3 h-3 mr-1 text-green-500" />
-                        ) : stat.trend.startsWith("-") ? (
-                          <TrendingDown className="w-3 h-3 mr-1 text-red-500" />
-                        ) : null}
-                        {stat.trend}
-                      </Badge>
-                    </div>
-                    <p className="text-2xl font-bold">{stat.value}</p>
-                    <p className="text-xs text-muted-foreground">{stat.label}</p>
-                  </CardContent>
-                </Card>
+              { label: "My Reports", value: stats?.total_reports ?? 0, icon: BarChart3, gradient: "card-gradient-green", text: "text-white" },
+              { label: "Pending", value: stats?.pending_reports ?? 0, icon: Clock, gradient: "card-gradient-orange", text: "text-white" },
+              { label: "Completed", value: stats?.completed_reports ?? 0, icon: CheckCircle, gradient: "card-gradient-blue", text: "text-white" },
+              { label: "In Progress", value: stats?.in_progress_reports ?? 0, icon: Truck, gradient: "bg-gradient-to-br from-purple-500 to-purple-600", text: "text-white" },
+            ].map((s, i) => (
+              <motion.div key={i} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}>
+                <div className={`${s.gradient} rounded-2xl p-5 card-hover shadow-md`}>
+                  <s.icon className="w-6 h-6 text-white/80 mb-3" />
+                  <p className="text-3xl font-bold text-white">{s.value}</p>
+                  <p className="text-sm text-white/80 mt-1">{s.label}</p>
+                </div>
               </motion.div>
             ))}
           </div>
 
+          {/* Points & Level */}
+          <div className="grid grid-cols-2 gap-4 mb-8">
+            <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}>
+              <div className="hero-gradient rounded-2xl p-6 card-hover shadow-lg animate-pulse-glow">
+                <div className="flex items-center justify-between mb-2">
+                  <Trophy className="w-8 h-8 text-white/90" />
+                  <span className="text-xs bg-white/20 text-white px-2 py-1 rounded-full">+10 per report</span>
+                </div>
+                <p className="text-4xl font-bold text-white mt-2">{stats?.points ?? 0}</p>
+                <p className="text-sm text-white/80 mt-1">Total Points Earned</p>
+              </div>
+            </motion.div>
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.25 }}>
+              <Card className="h-full card-hover stat-card">
+                <CardContent className="p-6 flex items-center gap-4 h-full">
+                  <div className="w-14 h-14 rounded-2xl bg-yellow-500/10 flex items-center justify-center shrink-0">
+                    <Star className="w-7 h-7 text-yellow-500" />
+                  </div>
+                  <div>
+                    <p className="text-3xl font-bold">Level {stats?.level ?? 1}</p>
+                    <p className="text-sm text-muted-foreground">Completed today: <span className="font-semibold text-primary">{stats?.completed_today ?? 0}</span></p>
+                  </div>
+                </CardContent>
+              </Card>
+            </motion.div>
+          </div>
+
           <div className="grid lg:grid-cols-3 gap-6 mb-8">
+            {/* Report status breakdown */}
             <div className="lg:col-span-2">
               <Card className="h-full">
                 <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <CardTitle>Waste Distribution Heatmap</CardTitle>
-                      <CardDescription>High-density overflow zones by region</CardDescription>
-                    </div>
-                    <Badge variant="outline">88% Accuracy</Badge>
-                  </div>
+                  <CardTitle>Report Status Overview</CardTitle>
+                  <CardDescription>Current status of all your submitted reports</CardDescription>
                 </CardHeader>
-                <CardContent>
-                  <div className="grid grid-cols-5 gap-2 mb-6">
-                    {[...Array(25)].map((_, i) => {
-                      const intensity = Math.random();
-                      return (
-                        <div
-                          key={i}
-                          className="aspect-square rounded-lg transition-all hover:scale-105 cursor-pointer"
-                          style={{
-                            backgroundColor: `rgba(34, 197, 94, ${0.2 + intensity * 0.8})`,
-                          }}
-                          title={`Zone ${i + 1}: ${Math.floor(intensity * 100)}% activity`}
-                        />
-                      );
-                    })}
-                  </div>
-
-                  <div className="space-y-3">
-                    {heatmapZones.map((zone, i) => (
-                      <div key={i} className="flex items-center gap-4">
-                        <div className="flex-1">
-                          <div className="flex items-center justify-between mb-1">
-                            <span className="text-sm font-medium">{zone.zone}</span>
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm text-muted-foreground">{zone.reports} reports</span>
-                              {zone.trend === "up" && <TrendingUp className="w-4 h-4 text-red-500" />}
-                              {zone.trend === "down" && <TrendingDown className="w-4 h-4 text-green-500" />}
+                <CardContent className="space-y-5">
+                  {[
+                    { label: "Pending Review", value: stats?.pending_reports ?? 0, total: stats?.total_reports ?? 1, color: "bg-orange-500", icon: Clock },
+                    { label: "Assigned to Driver", value: stats?.assigned_reports ?? 0, total: stats?.total_reports ?? 1, color: "bg-blue-500", icon: Truck },
+                    { label: "In Progress", value: stats?.in_progress_reports ?? 0, total: stats?.total_reports ?? 1, color: "bg-yellow-500", icon: Zap },
+                    { label: "Completed", value: stats?.completed_reports ?? 0, total: stats?.total_reports ?? 1, color: "bg-green-500", icon: CheckCircle },
+                  ].map((s, i) => {
+                    const pct = s.total > 0 ? Math.round((s.value / s.total) * 100) : 0;
+                    return (
+                      <motion.div key={i} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.08 }} className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className={`w-8 h-8 rounded-lg ${s.color} flex items-center justify-center`}>
+                              <s.icon className="w-4 h-4 text-white" />
                             </div>
+                            <span className="font-medium">{s.label}</span>
                           </div>
-                          <Progress value={zone.intensity} className="h-2" />
+                          <div className="text-right">
+                            <span className="font-bold">{s.value}</span>
+                            <span className="text-muted-foreground text-sm ml-1">({pct}%)</span>
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                        <Progress value={pct} className="h-2" />
+                      </motion.div>
+                    );
+                  })}
+                  {(stats?.total_reports ?? 0) === 0 && (
+                    <div className="text-center py-8 text-muted-foreground">
+                      <BarChart3 className="w-10 h-10 mx-auto mb-2 opacity-30" />
+                      <p>Submit your first report to see stats here</p>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
             </div>
 
+            {/* Waste classification */}
             <Card>
               <CardHeader>
-                <CardTitle>Waste Classification</CardTitle>
-                <CardDescription>Distribution by waste type</CardDescription>
+                <CardTitle>My Waste Types</CardTitle>
+                <CardDescription>Breakdown of your submitted reports</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {wasteDistribution.map((item, i) => (
-                  <motion.div
-                    key={i}
-                    initial={{ opacity: 0, x: 20 }}
-                    animate={{ opacity: 1, x: 0 }}
-                    transition={{ delay: i * 0.1 }}
-                    className="space-y-2"
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <div className={`w-8 h-8 rounded-lg ${item.color} flex items-center justify-center`}>
-                          <item.icon className="w-4 h-4 text-white" />
+                {wasteDist.length === 0 ? (
+                  <p className="text-sm text-muted-foreground text-center py-8">No reports yet</p>
+                ) : wasteDist.map((item, i) => {
+                  const pct = totalWaste > 0 ? Math.round((item.count / totalWaste) * 100) : 0;
+                  return (
+                    <motion.div key={i} initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: i * 0.1 }} className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <div className={`w-8 h-8 rounded-lg ${wasteColor[item.type] || "bg-gray-500"} flex items-center justify-center`}>
+                            {item.type === "organic" ? <Leaf className="w-4 h-4 text-white" /> :
+                             item.type === "recyclable" ? <Recycle className="w-4 h-4 text-white" /> :
+                             item.type === "hazardous" ? <AlertTriangle className="w-4 h-4 text-white" /> :
+                             <Trash2 className="w-4 h-4 text-white" />}
+                          </div>
+                          <span className="font-medium capitalize">{item.type}</span>
                         </div>
-                        <span className="font-medium">{item.type}</span>
+                        <div className="text-right">
+                          <span className="font-bold">{item.count}</span>
+                          <span className="text-muted-foreground text-sm ml-1">({pct}%)</span>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <span className="font-bold">{item.count}</span>
-                        <span className="text-muted-foreground text-sm ml-1">({item.percentage}%)</span>
-                      </div>
-                    </div>
-                    <Progress value={item.percentage} className="h-2" />
-                  </motion.div>
-                ))}
-
-                <div className="pt-4 border-t">
-                  <div className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">Total Classified</span>
-                    <span className="font-bold">{wasteDistribution.reduce((a, b) => a + b.count, 0)}</span>
+                      <Progress value={pct} className="h-2" />
+                    </motion.div>
+                  );
+                })}
+                {totalWaste > 0 && (
+                  <div className="pt-3 border-t flex items-center justify-between text-sm">
+                    <span className="text-muted-foreground">Total Reports</span>
+                    <span className="font-bold">{totalWaste}</span>
                   </div>
-                </div>
+                )}
               </CardContent>
             </Card>
           </div>
 
-          <div className="grid lg:grid-cols-2 gap-6">
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>Recent Reports</CardTitle>
-                    <CardDescription>Latest waste reports from citizens</CardDescription>
-                  </div>
-                  <Button variant="ghost" size="sm">View All</Button>
+          {/* Recent reports */}
+          <Card className="stat-card">
+            <CardHeader>
+              <div className="flex items-center justify-between">
+                <div>
+                  <CardTitle>My Recent Reports</CardTitle>
+                  <CardDescription>Your latest waste submissions — click to track</CardDescription>
                 </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-3">
-                  {recentReports.map((report, i) => (
-                    <motion.div
-                      key={report.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      className="flex items-center gap-4 p-3 rounded-lg bg-muted/50 hover:bg-muted transition-colors"
-                    >
-                      <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                        report.type === "Organic" ? "bg-green-500" :
-                        report.type === "Recyclable" ? "bg-blue-500" :
-                        report.type === "Hazardous" ? "bg-orange-500" : "bg-gray-500"
-                      }`}>
-                        {report.type === "Organic" ? <Leaf className="w-5 h-5 text-white" /> :
-                         report.type === "Recyclable" ? <Recycle className="w-5 h-5 text-white" /> :
-                         report.type === "Hazardous" ? <AlertTriangle className="w-5 h-5 text-white" /> :
-                         <Trash2 className="w-5 h-5 text-white" />}
-                      </div>
+                <Button variant="ghost" size="sm" onClick={() => router.push("/tracking")} className="gap-1 text-primary">
+                  View All <ArrowRight className="w-3 h-3" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {reports.length === 0 ? (
+                <div className="text-center py-14 space-y-4">
+                  <div className="w-16 h-16 mx-auto rounded-2xl bg-muted flex items-center justify-center">
+                    <BarChart3 className="w-8 h-8 text-muted-foreground opacity-40" />
+                  </div>
+                  <div>
+                    <p className="font-medium text-muted-foreground">No reports yet</p>
+                    <p className="text-sm text-muted-foreground">Submit your first waste report to get started</p>
+                  </div>
+                  <Button onClick={() => router.push("/report")} className="gap-2">
+                    <Leaf className="w-4 h-4" /> Report Waste
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {reports.map((report, i) => (
+                    <motion.div key={report.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.04 }}
+                      className="flex items-center gap-4 p-3.5 rounded-xl bg-muted/40 hover:bg-muted/70 transition-all cursor-pointer card-hover border border-transparent hover:border-border"
+                      onClick={() => router.push(`/tracking?id=${report.report_id}`)}>
+                      <WasteIcon type={report.waste_type} />
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <span className="font-mono text-sm">{report.id}</span>
-                          <Badge variant={
-                            report.priority === "high" ? "destructive" :
-                            report.priority === "medium" ? "default" : "secondary"
-                          } className="text-xs">
+                          <span className="font-mono text-sm font-semibold">{report.report_id}</span>
+                          <Badge variant={report.priority === "high" ? "destructive" : report.priority === "medium" ? "default" : "secondary"} className="text-xs">
                             {report.priority}
                           </Badge>
                         </div>
-                        <div className="flex items-center gap-1 text-sm text-muted-foreground">
+                        <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
                           <MapPin className="w-3 h-3" />
-                          <span className="truncate">{report.location}</span>
+                          <span className="truncate">{report.location_address || "No location"}</span>
                         </div>
                       </div>
-                      <div className="text-right">
+                      <div className="text-right shrink-0">
                         <Badge variant={
                           report.status === "Completed" ? "default" :
                           report.status === "In Progress" ? "secondary" :
                           report.status === "Assigned" ? "outline" : "destructive"
-                        }>
-                          {report.status}
-                        </Badge>
-                        <p className="text-xs text-muted-foreground mt-1">{report.time}</p>
+                        }>{report.status}</Badge>
+                        <p className="text-xs text-muted-foreground mt-1">{new Date(report.created_at).toLocaleDateString()}</p>
                       </div>
                     </motion.div>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
+              )}
+            </CardContent>
+          </Card>
 
-            <Card>
-              <CardHeader>
-                <div className="flex items-center justify-between">
-                  <div>
-                    <CardTitle>Collection Units</CardTitle>
-                    <CardDescription>Active fleet status and assignments</CardDescription>
-                  </div>
-                  <Badge variant="outline" className="gap-1">
-                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
-                    Live
-                  </Badge>
-                </div>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {collectionUnits.map((unit, i) => (
-                    <motion.div
-                      key={unit.id}
-                      initial={{ opacity: 0, y: 10 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.05 }}
-                      className="p-4 rounded-lg border bg-card hover:shadow-md transition-all"
-                    >
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="flex items-center gap-3">
-                          <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                            unit.status === "Active" ? "bg-green-500" :
-                            unit.status === "En Route" ? "bg-blue-500" : "bg-gray-400"
-                          }`}>
-                            <Truck className="w-5 h-5 text-white" />
-                          </div>
-                          <div>
-                            <p className="font-medium">{unit.name}</p>
-                            <p className="text-xs text-muted-foreground">{unit.id}</p>
-                          </div>
-                        </div>
-                        <Badge variant={
-                          unit.status === "Active" ? "default" :
-                          unit.status === "En Route" ? "secondary" : "outline"
-                        }>
-                          {unit.status}
-                        </Badge>
-                      </div>
-                      <div className="grid grid-cols-2 gap-4 text-sm">
-                        <div>
-                          <p className="text-muted-foreground">Location</p>
-                          <p className="font-medium">{unit.location}</p>
-                        </div>
-                        <div>
-                          <p className="text-muted-foreground">Current Task</p>
-                          <p className="font-mono">{unit.currentTask || "—"}</p>
-                        </div>
-                      </div>
-                      <div className="mt-3">
-                        <div className="flex items-center justify-between text-sm mb-1">
-                          <span className="text-muted-foreground">Capacity Load</span>
-                          <span className="font-medium">{unit.load}%</span>
-                        </div>
-                        <Progress value={unit.load} className="h-2" />
-                      </div>
-                    </motion.div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
         </div>
       </main>
-
       <Footer />
     </div>
   );

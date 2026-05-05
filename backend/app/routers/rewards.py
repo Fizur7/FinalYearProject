@@ -3,11 +3,12 @@ GET  /api/rewards/
 POST /api/rewards/{id}/redeem
 GET  /api/rewards/leaderboard
 GET  /api/rewards/my-stats
+DELETE /api/rewards/all  - admin only, clear all rewards
 """
 from fastapi import APIRouter, Depends, HTTPException
 from bson import ObjectId
 from .. import schemas
-from ..auth import get_current_user
+from ..auth import get_current_user, require_role
 from ..database import get_db
 
 router = APIRouter(prefix="/api/rewards", tags=["rewards"])
@@ -72,3 +73,11 @@ async def redeem_reward(reward_id: str, current_user: dict = Depends(get_current
         {"$inc": {"points": -reward["points_cost"]}},
     )
     return {"ok": True}
+
+
+@router.delete("/all")
+async def delete_all_rewards(current_user: dict = Depends(require_role("admin"))):
+    """Admin only — delete all rewards from the database."""
+    db = get_db()
+    result = await db.rewards.delete_many({})
+    return {"ok": True, "deleted": result.deleted_count}
